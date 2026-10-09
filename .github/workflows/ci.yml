@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, ${{ matrix.cc }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        cc: [gcc, clang]
+        exclude:
+          - os: macos-latest  # gcc on macOS is just clang
+            cc: gcc
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (warnings are errors)
+        run: make CC=${{ matrix.cc }} CFLAGS="-O2 -Wall -Wextra -Wpedantic -Werror"
+      - name: Unit + end-to-end tests
+        run: make CC=${{ matrix.cc }} CFLAGS="-O2 -Wall -Wextra -Wpedantic -Werror" test
+
+  sanitizers:
+    name: sanitizers (ASan, UBSan, LeakSan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tests under sanitizers
+        run: make CC=clang check
+
+  # Deployment: only for version tags, and only once every test job passed.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, sanitizers]
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: tig-linux-x86_64
+          - os: macos-latest
+            asset: tig-macos-arm64
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test release binary
+        run: |
+          make CFLAGS="-O2 -Wall -Wextra -Wpedantic -Werror" test
+          cp tig ${{ matrix.asset }}
+      - name: Publish to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --generate-notes \
+            || gh release view "$GITHUB_REF_NAME" >/dev/null
+          gh release upload "$GITHUB_REF_NAME" ${{ matrix.asset }} --clobber
